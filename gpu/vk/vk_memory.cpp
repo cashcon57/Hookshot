@@ -843,7 +843,8 @@ void stage_put(Capture& c) {   // (the block back to the kept ones, at most four
     c.sidx.clear();
     if (!c.stage) return;
     std::lock_guard lk(stage_mu);
-    if (stage_free.size() < 4 && stage_free_bytes + c.stage_bytes <= (96ull << 20)) {
+    static const bool low_spec = getenv("RX_VK_LOW_SPEC") != nullptr;   // (RAM the tight resource there: no block kept)
+    if (!low_spec && stage_free.size() < 4 && stage_free_bytes + c.stage_bytes <= (96ull << 20)) {
         stage_free_bytes += c.stage_bytes;
         stage_free.emplace_back(std::move(c.stage), c.stage_bytes);
     }
@@ -1651,7 +1652,9 @@ std::unique_ptr<Capture> capture_make() {
             // (shadow staging: the pages in the texture ranges are also copied into c->stage, from guest memory first and the buffer
             // from there. Not the late pages: take_capture copies those again into the buffer after the GPU wait, so the buffer is
             // where their newer bytes are, and they stay unstaged (sidx -1: the shadow reads them from the buffer; a few a take))
-            if (stage_on() && !texr.empty()) {
+            // (only where the capture buffer is not cached memory: a cached one the shadow reads as fast as the staging, and the
+            // extra copy would be the game thread's for nothing)
+            if (stage_on() && !texr.empty() && !host_cached(c->alloc)) {
                 c->sidx.assign((size_t)n, -1);
                 int32_t tn = 0;
                 size_t lj = 0;
