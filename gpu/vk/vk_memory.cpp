@@ -812,6 +812,7 @@ struct Capture {
     std::unique_ptr<uint8_t[]> stage;
     size_t stage_bytes = 0;
     std::vector<int32_t> sidx;
+    bool buf_cached = false;   // (its capture buffer's memory is HOST_CACHED: for the staging log line)
 };
 // (the staging blocks, kept for the next capture: a fresh 20 MB block is ~5000 page faults on the game's thread)
 std::mutex stage_mu;   // (a leaf lock)
@@ -1654,7 +1655,8 @@ std::unique_ptr<Capture> capture_make() {
             // where their newer bytes are, and they stay unstaged (sidx -1: the shadow reads them from the buffer; a few a take))
             // (only where the capture buffer is not cached memory: a cached one the shadow reads as fast as the staging, and the
             // extra copy would be the game thread's for nothing)
-            if (stage_on() && !texr.empty() && !host_cached(c->alloc)) {
+            c->buf_cached = host_cached(c->alloc);
+            if (stage_on() && !texr.empty() && !c->buf_cached) {
                 c->sidx.assign((size_t)n, -1);
                 int32_t tn = 0;
                 size_t lj = 0;
@@ -1795,7 +1797,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                 }
             }
             bool swept = false;
-            static int64_t st_takes, st_from_stage, st_from_map;   // (the shadow copies by source, logged every 600 takes; shadow_mu)
+            static int64_t st_takes, st_from_stage, st_from_map, st_cached;   // (the shadow copies by source and the takes whose buffer was cached, logged every 600 takes; shadow_mu)
             int64_t from_stage = 0, from_map = 0;
             static thread_local std::vector<CopyPair> pairs;   // (the copies, made together once the slots are known)
             pairs.clear();
@@ -1829,11 +1831,12 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
             }
             // (shadow_mu still held: no slot taken here goes before its copy; the sweep above drops only older ones)
             if (!pairs.empty()) copy_pairs(pairs.data(), (int64_t)pairs.size());
-            st_from_stage += from_stage, st_from_map += from_map;
+            st_from_stage += from_stage, st_from_map += from_map, st_cached += c->buf_cached ? 1 : 0;
             if (++st_takes % 600 == 0) {
-                logf("vk: shadow staging (600 takes): %lld shadow copies from staging, %lld from the capture buffer%s",
-                     (long long)st_from_stage, (long long)st_from_map, stage_on() ? "" : " (RX_VK_SHADOW_STAGE=0)");
-                st_from_stage = st_from_map = 0;
+                logf("vk: shadow staging (600 takes): %lld shadow copies from staging, %lld from the capture buffer; capture buffers: %lld "
+                     "host-cached, %lld not (write-combined: staged)%s", (long long)st_from_stage, (long long)st_from_map,
+                     (long long)st_cached, (long long)(600 - st_cached), stage_on() ? "" : " (RX_VK_SHADOW_STAGE=0)");
+                st_from_stage = st_from_map = 0, st_cached = 0;
             }
             for (; i < c->copied.size(); i++)   // (the shadow full: the copied pages not replaced lose their old copies)
                 if (in_tex_merged((uint64_t)c->copied[i] << 12)) shadow_erase(c->copied[i]);
