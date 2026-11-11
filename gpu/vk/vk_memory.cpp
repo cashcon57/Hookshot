@@ -817,8 +817,8 @@ struct Capture {
 std::mutex stage_mu;   // (a leaf lock)
 std::vector<std::pair<std::unique_ptr<uint8_t[]>, size_t>> stage_free;
 size_t stage_free_bytes = 0;
-bool stage_on() {   // (RX_VK_SHADOW_STAGE=0: the shadow reads the capture buffer, as before)
-    static const bool on = !getenv("RX_VK_SHADOW_STAGE") || atoi(getenv("RX_VK_SHADOW_STAGE")) != 0;
+bool stage_on() {   // (RX_VK_SHADOW_STAGE=0 / off / false / no: the shadow reads the capture buffer, as before)
+    static const bool on = [] { const char* e = getenv("RX_VK_SHADOW_STAGE"); return !e || !env_value_off(e); }();   // (on unless an off value: env_value_off)
     return on;
 }
 bool stage_get(Capture& c, size_t need) {   // (a block of at least need bytes into c: a kept one, else a new one)
@@ -843,7 +843,7 @@ void stage_put(Capture& c) {   // (the block back to the kept ones, at most four
     c.sidx.clear();
     if (!c.stage) return;
     std::lock_guard lk(stage_mu);
-    static const bool low_spec = getenv("RX_VK_LOW_SPEC") != nullptr;   // (RAM the tight resource there: no block kept)
+    static const bool low_spec = env_on("RX_VK_LOW_SPEC");   // (RAM the tight resource there: no block kept)
     if (!low_spec && stage_free.size() < 4 && stage_free_bytes + c.stage_bytes <= (96ull << 20)) {
         stage_free_bytes += c.stage_bytes;
         stage_free.emplace_back(std::move(c.stage), c.stage_bytes);
